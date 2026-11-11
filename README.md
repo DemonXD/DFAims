@@ -6,10 +6,11 @@
 
 ## 项目预览
 
-当前默认准星样式：
+预制三种准星样式：
 
-- 绿色细线空心圆环
-- 红色实心中心点
+![](./assets/crosshair.png)
+
+准心支持：
 - 透明背景
 - 鼠标穿透
 - 支持快捷键显示和隐藏
@@ -88,6 +89,8 @@ FPSCrosshair.exe
 | 快捷键 | 功能 |
 |---|---|
 | F8 | 显示 / 隐藏准星 |
+| F9 | 顺序切换三种准心 |
+| Shift + F9 | 逆序切换三种准心 |
 | Ctrl + Shift + Q | 退出程序 |
 
 快捷键使用 Windows 全局热键机制注册。
@@ -99,53 +102,30 @@ FPSCrosshair.exe
 ```cpp
 namespace Config
 {
-    // 绿色圆环
-    constexpr float RING_RADIUS = 35.0f;
-    constexpr float RING_WIDTH  = 1.0f;
+    // 通用绿色
+    constexpr float GREEN_R = 0.0f;
+    constexpr float GREEN_G = 1.0f;
+    constexpr float GREEN_B = 0.0f;
 
     // 红色中心点
+    constexpr float RED_R = 1.0f;
+    constexpr float RED_G = 0.08f;
+    constexpr float RED_B = 0.08f;
+
+    // CS Minimal
+    constexpr float CS_ARM_LENGTH = 7.0f;
+    constexpr float CS_CENTER_GAP = 4.0f;
+    constexpr float CS_LINE_WIDTH = 1.5f;
+
+    // Green Circle + Red Dot
+    constexpr float RING_RADIUS = 35.0f;
+    constexpr float RING_WIDTH = 1.0f;
     constexpr float DOT_RADIUS = 2.2f;
 
-    // 圆环颜色
-    constexpr float RING_R = 0.0f;
-    constexpr float RING_G = 1.0f;
-    constexpr float RING_B = 0.0f;
-
-    // 中心点颜色
-    constexpr float DOT_R = 1.0f;
-    constexpr float DOT_G = 0.08f;
-    constexpr float DOT_B = 0.08f;
+    // Minimal Green Cross
+    constexpr float MINIMAL_CROSS_LENGTH = 9.0f;
+    constexpr float MINIMAL_CROSS_WIDTH = 1.5f;
 }
-```
-
-### 参数说明
-
-| 参数 | 默认值 | 说明 |
-|---|---:|---|
-| RING_RADIUS | 35.0 | 圆环半径 |
-| RING_WIDTH | 1.0 | 圆环线宽 |
-| DOT_RADIUS | 2.2 | 中心点半径 |
-| RING_R | 0.0 | 圆环红色通道 |
-| RING_G | 1.0 | 圆环绿色通道 |
-| RING_B | 0.0 | 圆环蓝色通道 |
-| DOT_R | 1.0 | 中心点红色通道 |
-| DOT_G | 0.08 | 中心点绿色通道 |
-| DOT_B | 0.08 | 中心点蓝色通道 |
-
-颜色通道取值范围为 `0.0 - 1.0`。
-
-例如：
-
-绿色：
-
-```cpp
-D2D1::ColorF(0.0f, 1.0f, 0.0f, 1.0f)
-```
-
-红色：
-
-```cpp
-D2D1::ColorF(1.0f, 0.0f, 0.0f, 1.0f)
 ```
 
 ## 实现原理

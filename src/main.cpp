@@ -1,8 +1,11 @@
-#define _WIN32_WINNT 0x0A00
+
 #define WIN32_LEAN_AND_MEAN
+#define _WIN32_WINNT 0x0A00
+
 #include <windows.h>
 #include <d2d1.h>
 #include <cstdint>
+#include <cstddef>
 
 #pragma comment(lib, "d2d1.lib")
 #pragma comment(lib, "user32.lib")
@@ -10,31 +13,50 @@
 #pragma comment(lib, "ole32.lib")
 
 // ============================================================
-// 准星参数
+// 准星预设
+// ============================================================
+
+enum class CrosshairPreset
+{
+    CS_MINIMAL = 0,
+    GREEN_CIRCLE_RED_DOT,
+    MINIMAL_GREEN_CROSS,
+    COUNT
+};
+
+// ============================================================
+// 配置参数
 // ============================================================
 
 namespace Config
 {
-    // 绿色圆环
-    constexpr float RING_RADIUS = 35.0f;
-    constexpr float RING_WIDTH  = 0.2f;
+    // 通用绿色
+    constexpr float GREEN_R = 0.0f;
+    constexpr float GREEN_G = 1.0f;
+    constexpr float GREEN_B = 0.0f;
 
     // 红色中心点
-    constexpr float DOT_RADIUS = 1.5f;
+    constexpr float RED_R = 1.0f;
+    constexpr float RED_G = 0.08f;
+    constexpr float RED_B = 0.08f;
 
-    // 圆环颜色
-    constexpr float RING_R = 0.0f;
-    constexpr float RING_G = 1.0f;
-    constexpr float RING_B = 0.0f;
+    // CS Minimal
+    constexpr float CS_ARM_LENGTH = 7.0f;
+    constexpr float CS_CENTER_GAP = 4.0f;
+    constexpr float CS_LINE_WIDTH = 1.5f;
 
-    // 中心点颜色
-    constexpr float DOT_R = 1.0f;
-    constexpr float DOT_G = 0.08f;
-    constexpr float DOT_B = 0.08f;
+    // Green Circle + Red Dot
+    constexpr float RING_RADIUS = 35.0f;
+    constexpr float RING_WIDTH = 1.0f;
+    constexpr float DOT_RADIUS = 2.2f;
+
+    // Minimal Green Cross
+    constexpr float MINIMAL_CROSS_LENGTH = 9.0f;
+    constexpr float MINIMAL_CROSS_WIDTH = 1.5f;
 }
 
 // ============================================================
-// 全局资源
+// 全局状态
 // ============================================================
 
 static HWND g_hwnd = nullptr;
@@ -42,8 +64,8 @@ static HWND g_hwnd = nullptr;
 static ID2D1Factory* g_factory = nullptr;
 static ID2D1DCRenderTarget* g_target = nullptr;
 
-static ID2D1SolidColorBrush* g_ringBrush = nullptr;
-static ID2D1SolidColorBrush* g_dotBrush = nullptr;
+static ID2D1SolidColorBrush* g_greenBrush = nullptr;
+static ID2D1SolidColorBrush* g_redBrush = nullptr;
 
 static HDC g_memDC = nullptr;
 static HBITMAP g_dibBitmap = nullptr;
@@ -58,22 +80,47 @@ static int g_screenHeight = 0;
 
 static bool g_visible = true;
 
+static CrosshairPreset g_currentPreset =
+    CrosshairPreset::CS_MINIMAL;
+
+// ============================================================
+// 预设名称
+// ============================================================
+
+static const wchar_t* GetPresetName()
+{
+    switch (g_currentPreset)
+    {
+    case CrosshairPreset::CS_MINIMAL:
+        return L"CS Minimal";
+
+    case CrosshairPreset::GREEN_CIRCLE_RED_DOT:
+        return L"Green Circle + Red Dot";
+
+    case CrosshairPreset::MINIMAL_GREEN_CROSS:
+        return L"Minimal Green Cross";
+
+    default:
+        return L"Unknown";
+    }
+}
+
 // ============================================================
 // 资源释放
 // ============================================================
 
 static void ReleaseRenderResources()
 {
-    if (g_ringBrush)
+    if (g_greenBrush)
     {
-        g_ringBrush->Release();
-        g_ringBrush = nullptr;
+        g_greenBrush->Release();
+        g_greenBrush = nullptr;
     }
 
-    if (g_dotBrush)
+    if (g_redBrush)
     {
-        g_dotBrush->Release();
-        g_dotBrush = nullptr;
+        g_redBrush->Release();
+        g_redBrush = nullptr;
     }
 
     if (g_target)
@@ -104,7 +151,7 @@ static void ReleaseRenderResources()
 }
 
 // ============================================================
-// 创建 Direct2D Factory
+// Direct2D 初始化
 // ============================================================
 
 static HRESULT InitializeDirect2D()
@@ -118,14 +165,13 @@ static HRESULT InitializeDirect2D()
 }
 
 // ============================================================
-// 创建绘图缓冲区
+// 创建绘图资源
 // ============================================================
 
 static HRESULT CreateRenderResources()
 {
     ReleaseRenderResources();
 
-    // 获取虚拟桌面范围
     g_virtualX = GetSystemMetrics(SM_XVIRTUALSCREEN);
     g_virtualY = GetSystemMetrics(SM_YVIRTUALSCREEN);
 
@@ -137,7 +183,6 @@ static HRESULT CreateRenderResources()
         return E_FAIL;
     }
 
-    // 创建内存 DC
     g_memDC = CreateCompatibleDC(nullptr);
 
     if (!g_memDC)
@@ -147,6 +192,7 @@ static HRESULT CreateRenderResources()
 
     // 创建 32 位、自顶向下的 DIB
     BITMAPINFO bmi{};
+
     bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
     bmi.bmiHeader.biWidth = g_screenWidth;
     bmi.bmiHeader.biHeight = -g_screenHeight;
@@ -176,14 +222,13 @@ static HRESULT CreateRenderResources()
         return E_FAIL;
     }
 
-    // 清空缓冲区，确保背景 Alpha = 0
     ZeroMemory(
         g_bitmapBits,
         static_cast<size_t>(g_screenWidth) *
         static_cast<size_t>(g_screenHeight) * 4
     );
 
-    // 创建 Direct2D DC Render Target
+    // Direct2D 使用预乘 Alpha 的 BGRA 格式
     D2D1_RENDER_TARGET_PROPERTIES properties =
         D2D1::RenderTargetProperties(
             D2D1_RENDER_TARGET_TYPE_DEFAULT,
@@ -207,7 +252,6 @@ static HRESULT CreateRenderResources()
         return hr;
     }
 
-    // 绑定 DIB 对应的 DC
     RECT rect{
         0,
         0,
@@ -222,20 +266,19 @@ static HRESULT CreateRenderResources()
         return hr;
     }
 
-    // 设置抗锯齿
     g_target->SetAntialiasMode(
         D2D1_ANTIALIAS_MODE_PER_PRIMITIVE
     );
 
-    // 创建绿色圆环画刷
+    // 绿色画刷
     hr = g_target->CreateSolidColorBrush(
         D2D1::ColorF(
-            Config::RING_R,
-            Config::RING_G,
-            Config::RING_B,
+            Config::GREEN_R,
+            Config::GREEN_G,
+            Config::GREEN_B,
             1.0f
         ),
-        &g_ringBrush
+        &g_greenBrush
     );
 
     if (FAILED(hr))
@@ -243,33 +286,133 @@ static HRESULT CreateRenderResources()
         return hr;
     }
 
-    // 创建红色中心点画刷
+    // 红色画刷
     hr = g_target->CreateSolidColorBrush(
         D2D1::ColorF(
-            Config::DOT_R,
-            Config::DOT_G,
-            Config::DOT_B,
+            Config::RED_R,
+            Config::RED_G,
+            Config::RED_B,
             1.0f
         ),
-        &g_dotBrush
+        &g_redBrush
     );
 
     return hr;
 }
 
 // ============================================================
-// 绘制准星
+// 绘制预设 1：CS Minimal
+// ============================================================
+
+static void DrawCSMinimal(float cx, float cy)
+{
+    const float gap = Config::CS_CENTER_GAP;
+    const float arm = Config::CS_ARM_LENGTH;
+    const float width = Config::CS_LINE_WIDTH;
+
+    // 左侧
+    g_target->DrawLine(
+        D2D1::Point2F(cx - gap - arm, cy),
+        D2D1::Point2F(cx - gap, cy),
+        g_greenBrush,
+        width
+    );
+
+    // 右侧
+    g_target->DrawLine(
+        D2D1::Point2F(cx + gap, cy),
+        D2D1::Point2F(cx + gap + arm, cy),
+        g_greenBrush,
+        width
+    );
+
+    // 上侧
+    g_target->DrawLine(
+        D2D1::Point2F(cx, cy - gap - arm),
+        D2D1::Point2F(cx, cy - gap),
+        g_greenBrush,
+        width
+    );
+
+    // 下侧
+    g_target->DrawLine(
+        D2D1::Point2F(cx, cy + gap),
+        D2D1::Point2F(cx, cy + gap + arm),
+        g_greenBrush,
+        width
+    );
+}
+
+// ============================================================
+// 绘制预设 2：绿色圆环 + 红色中心点
+// ============================================================
+
+static void DrawGreenCircleRedDot(float cx, float cy)
+{
+    const D2D1_ELLIPSE ring =
+        D2D1::Ellipse(
+            D2D1::Point2F(cx, cy),
+            Config::RING_RADIUS,
+            Config::RING_RADIUS
+        );
+
+    g_target->DrawEllipse(
+        ring,
+        g_greenBrush,
+        Config::RING_WIDTH
+    );
+
+    const D2D1_ELLIPSE dot =
+        D2D1::Ellipse(
+            D2D1::Point2F(cx, cy),
+            Config::DOT_RADIUS,
+            Config::DOT_RADIUS
+        );
+
+    g_target->FillEllipse(
+        dot,
+        g_redBrush
+    );
+}
+
+// ============================================================
+// 绘制预设 3：Minimal Green Cross
+// ============================================================
+
+static void DrawMinimalGreenCross(float cx, float cy)
+{
+    const float length = Config::MINIMAL_CROSS_LENGTH;
+    const float width = Config::MINIMAL_CROSS_WIDTH;
+
+    // 水平线
+    g_target->DrawLine(
+        D2D1::Point2F(cx - length, cy),
+        D2D1::Point2F(cx + length, cy),
+        g_greenBrush,
+        width
+    );
+
+    // 垂直线
+    g_target->DrawLine(
+        D2D1::Point2F(cx, cy - length),
+        D2D1::Point2F(cx, cy + length),
+        g_greenBrush,
+        width
+    );
+}
+
+// ============================================================
+// 根据当前预设绘制准星
 // ============================================================
 
 static HRESULT DrawCrosshair()
 {
-    if (!g_target || !g_ringBrush || !g_dotBrush)
+    if (!g_target || !g_greenBrush || !g_redBrush)
     {
         return E_FAIL;
     }
 
-    // 以主显示器中心作为准星中心
-    // 转换为虚拟桌面窗口客户区坐标
+    // 主显示器中心，转换为虚拟桌面窗口客户区坐标
     const float centerX =
         static_cast<float>(
             GetSystemMetrics(SM_CXSCREEN) / 2 - g_virtualX
@@ -282,43 +425,34 @@ static HRESULT DrawCrosshair()
 
     g_target->BeginDraw();
 
-    // 完全透明背景
+    // 透明背景
     g_target->Clear(
         D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f)
     );
 
-    // 绿色空心圆环
-    const D2D1_ELLIPSE ring =
-        D2D1::Ellipse(
-            D2D1::Point2F(centerX, centerY),
-            Config::RING_RADIUS,
-            Config::RING_RADIUS
-        );
+    switch (g_currentPreset)
+    {
+    case CrosshairPreset::CS_MINIMAL:
+        DrawCSMinimal(centerX, centerY);
+        break;
 
-    g_target->DrawEllipse(
-        ring,
-        g_ringBrush,
-        Config::RING_WIDTH
-    );
+    case CrosshairPreset::GREEN_CIRCLE_RED_DOT:
+        DrawGreenCircleRedDot(centerX, centerY);
+        break;
 
-    // 红色实心中心点
-    const D2D1_ELLIPSE dot =
-        D2D1::Ellipse(
-            D2D1::Point2F(centerX, centerY),
-            Config::DOT_RADIUS,
-            Config::DOT_RADIUS
-        );
+    case CrosshairPreset::MINIMAL_GREEN_CROSS:
+        DrawMinimalGreenCross(centerX, centerY);
+        break;
 
-    g_target->FillEllipse(
-        dot,
-        g_dotBrush
-    );
+    default:
+        break;
+    }
 
     return g_target->EndDraw();
 }
 
 // ============================================================
-// 更新分层窗口
+// 将绘图缓冲区合成到透明窗口
 // ============================================================
 
 static BOOL PresentOverlay()
@@ -336,6 +470,7 @@ static BOOL PresentOverlay()
     POINT source{ 0, 0 };
 
     BLENDFUNCTION blend{};
+
     blend.BlendOp = AC_SRC_OVER;
     blend.BlendFlags = 0;
     blend.SourceConstantAlpha = 255;
@@ -355,19 +490,12 @@ static BOOL PresentOverlay()
 }
 
 // ============================================================
-// 重建并刷新绘图资源
+// 绘制并刷新
 // ============================================================
 
-static HRESULT RebuildOverlay()
+static HRESULT RenderAndPresent()
 {
-    HRESULT hr = CreateRenderResources();
-
-    if (FAILED(hr))
-    {
-        return hr;
-    }
-
-    hr = DrawCrosshair();
+    HRESULT hr = DrawCrosshair();
 
     if (FAILED(hr))
     {
@@ -379,6 +507,29 @@ static HRESULT RebuildOverlay()
         return HRESULT_FROM_WIN32(GetLastError());
     }
 
+    return S_OK;
+}
+
+// ============================================================
+// 重建绘图资源
+// ============================================================
+
+static HRESULT RebuildOverlay()
+{
+    HRESULT hr = CreateRenderResources();
+
+    if (FAILED(hr))
+    {
+        return hr;
+    }
+
+    hr = RenderAndPresent();
+
+    if (FAILED(hr))
+    {
+        return hr;
+    }
+
     SetWindowPos(
         g_hwnd,
         HWND_TOPMOST,
@@ -386,15 +537,54 @@ static HRESULT RebuildOverlay()
         g_virtualY,
         g_screenWidth,
         g_screenHeight,
-        // SWP_NOACTIVATE | SWP_SHOWWINDOW
-        SWP_NOACTIVATE
+        SWP_NOACTIVATE | SWP_NOOWNERZORDER
     );
 
     return S_OK;
 }
 
 // ============================================================
-// 窗口消息
+// 切换下一套准星
+// ============================================================
+
+static void NextPreset()
+{
+    const int count =
+        static_cast<int>(CrosshairPreset::COUNT);
+
+    int current =
+        static_cast<int>(g_currentPreset);
+
+    current = (current + 1) % count;
+
+    g_currentPreset =
+        static_cast<CrosshairPreset>(current);
+
+    RenderAndPresent();
+}
+
+// ============================================================
+// 切换上一套准星
+// ============================================================
+
+static void PreviousPreset()
+{
+    const int count =
+        static_cast<int>(CrosshairPreset::COUNT);
+
+    int current =
+        static_cast<int>(g_currentPreset);
+
+    current = (current - 1 + count) % count;
+
+    g_currentPreset =
+        static_cast<CrosshairPreset>(current);
+
+    RenderAndPresent();
+}
+
+// ============================================================
+// 窗口消息处理
 // ============================================================
 
 static LRESULT CALLBACK WindowProc(
@@ -415,12 +605,26 @@ static LRESULT CALLBACK WindowProc(
 
             ShowWindow(
                 hwnd,
-                g_visible ? SW_SHOWNOACTIVATE : SW_HIDE
+                g_visible
+                    ? SW_SHOWNOACTIVATE
+                    : SW_HIDE
             );
         }
 
-        // Ctrl + Shift + Q：退出
+        // F9：下一套
         else if (wParam == 2)
+        {
+            NextPreset();
+        }
+
+        // Shift + F9：上一套
+        else if (wParam == 3)
+        {
+            PreviousPreset();
+        }
+
+        // Ctrl + Shift + Q：退出
+        else if (wParam == 4)
         {
             DestroyWindow(hwnd);
         }
@@ -429,7 +633,6 @@ static LRESULT CALLBACK WindowProc(
 
     case WM_DISPLAYCHANGE:
 
-        // 显示器布局或分辨率发生变化时重建缓冲区
         RebuildOverlay();
         return 0;
 
@@ -440,6 +643,8 @@ static LRESULT CALLBACK WindowProc(
 
         UnregisterHotKey(hwnd, 1);
         UnregisterHotKey(hwnd, 2);
+        UnregisterHotKey(hwnd, 3);
+        UnregisterHotKey(hwnd, 4);
 
         PostQuitMessage(0);
         return 0;
@@ -464,7 +669,7 @@ int WINAPI wWinMain(
     int
 )
 {
-    // 使用物理像素坐标，避免 DPI 虚拟化
+    // DPI 感知
     SetProcessDpiAwarenessContext(
         DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
     );
@@ -489,6 +694,7 @@ int WINAPI wWinMain(
 
     // 注册窗口类
     WNDCLASSEXW wc{};
+
     wc.cbSize = sizeof(wc);
     wc.lpfnWndProc = WindowProc;
     wc.hInstance = hInstance;
@@ -501,7 +707,7 @@ int WINAPI wWinMain(
         return 3;
     }
 
-    // 创建全虚拟桌面覆盖窗口
+    // 创建透明覆盖窗口
     g_hwnd = CreateWindowExW(
         WS_EX_LAYERED |
         WS_EX_TRANSPARENT |
@@ -527,32 +733,53 @@ int WINAPI wWinMain(
         return 4;
     }
 
-    // 注册全局快捷键
+    // F8：显示 / 隐藏
     if (!RegisterHotKey(g_hwnd, 1, 0, VK_F8))
     {
         DestroyWindow(g_hwnd);
-        ReleaseRenderResources();
         g_factory->Release();
         CoUninitialize();
         return 5;
     }
 
-    if (!RegisterHotKey(
-        g_hwnd,
-        2,
-        MOD_CONTROL | MOD_SHIFT,
-        'Q'
-    ))
+    // F9：下一套
+    if (!RegisterHotKey(g_hwnd, 2, 0, VK_F9))
     {
-        UnregisterHotKey(g_hwnd, 1);
         DestroyWindow(g_hwnd);
-        ReleaseRenderResources();
         g_factory->Release();
         CoUninitialize();
         return 6;
     }
 
-    // 初始化绘图资源
+    // Shift + F9：上一套
+    if (!RegisterHotKey(
+        g_hwnd,
+        3,
+        MOD_SHIFT,
+        VK_F9
+    ))
+    {
+        DestroyWindow(g_hwnd);
+        g_factory->Release();
+        CoUninitialize();
+        return 7;
+    }
+
+    // Ctrl + Shift + Q：退出
+    if (!RegisterHotKey(
+        g_hwnd,
+        4,
+        MOD_CONTROL | MOD_SHIFT,
+        'Q'
+    ))
+    {
+        DestroyWindow(g_hwnd);
+        g_factory->Release();
+        CoUninitialize();
+        return 8;
+    }
+
+    // 初始化绘图
     hr = RebuildOverlay();
 
     if (FAILED(hr))
@@ -561,16 +788,37 @@ int WINAPI wWinMain(
         ReleaseRenderResources();
         g_factory->Release();
         CoUninitialize();
-        return 7;
+        return 9;
     }
 
-    ShowWindow(g_hwnd, SW_SHOWNOACTIVATE);
+    ShowWindow(
+        g_hwnd,
+        SW_SHOWNOACTIVATE
+    );
 
     // 消息循环
     MSG msg{};
 
-    while (GetMessageW(&msg, nullptr, 0, 0) > 0)
+    int result = 0;
+
+    while (true)
     {
+        const BOOL ret = GetMessageW(
+            &msg,
+            nullptr,
+            0,
+            0
+        );
+
+        if (ret <= 0)
+        {
+            if (ret == -1)
+            {
+                result = 10;
+            }
+            break;
+        }
+
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
@@ -586,5 +834,5 @@ int WINAPI wWinMain(
 
     CoUninitialize();
 
-    return static_cast<int>(msg.wParam);
+    return result;
 }

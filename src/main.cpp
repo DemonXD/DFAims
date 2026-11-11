@@ -537,7 +537,8 @@ static HRESULT RebuildOverlay()
         g_virtualY,
         g_screenWidth,
         g_screenHeight,
-        SWP_NOACTIVATE | SWP_NOOWNERZORDER
+        // SWP_NOACTIVATE | SWP_NOOWNERZORDER
+        SWP_NOACTIVATE
     );
 
     return S_OK;
@@ -603,12 +604,24 @@ static LRESULT CALLBACK WindowProc(
         {
             g_visible = !g_visible;
 
-            ShowWindow(
-                hwnd,
-                g_visible
-                    ? SW_SHOWNOACTIVATE
-                    : SW_HIDE
-            );
+            if (g_visible)
+            {
+                ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+
+                // 核心：仿照 old.cpp，在显示时强行拉回最上层
+                SetWindowPos(
+                    hwnd,
+                    HWND_TOPMOST,
+                    0, 0, 0, 0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
+                );
+
+                RenderAndPresent(); // 确保显示时内容被正确呈现
+            }
+            else
+            {
+                ShowWindow(hwnd, SW_HIDE);
+            }
         }
 
         // F9：下一套
@@ -636,10 +649,27 @@ static LRESULT CALLBACK WindowProc(
         RebuildOverlay();
         return 0;
 
+    case WM_TIMER:
+        if (wParam == 101 && g_visible)
+        {
+            // 定期强制将窗口设为最顶层，防止被全屏游戏压在底下
+            SetWindowPos(
+                hwnd,
+                HWND_TOPMOST,
+                g_virtualX,
+                g_virtualY,
+                g_screenWidth,
+                g_screenHeight,
+                SWP_NOACTIVATE
+            );
+        }
+        return 0;
+
     case WM_ERASEBKGND:
         return 1;
 
     case WM_DESTROY:
+        KillTimer(hwnd, 101); // 销毁定时器
 
         UnregisterHotKey(hwnd, 1);
         UnregisterHotKey(hwnd, 2);
@@ -648,6 +678,7 @@ static LRESULT CALLBACK WindowProc(
 
         PostQuitMessage(0);
         return 0;
+    
     }
 
     return DefWindowProcW(
@@ -795,6 +826,8 @@ int WINAPI wWinMain(
         g_hwnd,
         SW_SHOWNOACTIVATE
     );
+
+    SetTimer(g_hwnd, 101, 1000, nullptr); // 1000 毫秒刷新一次，确保在分辨率变化时能及时更新
 
     // 消息循环
     MSG msg{};
